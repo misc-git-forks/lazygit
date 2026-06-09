@@ -104,6 +104,13 @@ type ViewBufferManager struct {
 	refreshView  func()
 	onEndOfInput func()
 
+	// beginRender starts an off-screen render: the new content is built without
+	// disturbing what's displayed. swapInRender then promotes it to the display
+	// in one step. Together they keep the view showing the previous render until
+	// the new one has read enough to paint, instead of revealing it line by line.
+	beginRender  func()
+	swapInRender func()
+
 	// see docs/dev/Busy.md
 	// A gocui task is not the same thing as the tasks defined in this file.
 	// A gocui task simply represents the fact that lazygit is busy doing something,
@@ -147,6 +154,8 @@ func NewViewBufferManager(
 	refreshView func(),
 	onEndOfInput func(),
 	onNewKey func(),
+	beginRender func(),
+	swapInRender func(),
 	newGocuiTask func() gocui.Task,
 ) *ViewBufferManager {
 	return &ViewBufferManager{
@@ -157,6 +166,8 @@ func NewViewBufferManager(
 		onEndOfInput: onEndOfInput,
 		readLines:    nil,
 		onNewKey:     onNewKey,
+		beginRender:  beginRender,
+		swapInRender: swapInRender,
 		newGocuiTask: newGocuiTask,
 	}
 }
@@ -426,7 +437,10 @@ func (self *ViewBufferManager) NewCmdTask(start func() (Cmd, io.Reader), prefix 
 
 						loadingMutex.Lock()
 						if !loaded {
-							self.beforeStart()
+							// Build the new content off-screen, leaving the previous render
+							// displayed until we swap in below; this is what keeps an async
+							// re-render from showing a half-loaded buffer.
+							self.beginRender()
 							if prefix != "" {
 								writeToView([]byte(prefix))
 							}
@@ -435,10 +449,11 @@ func (self *ViewBufferManager) NewCmdTask(start func() (Cmd, io.Reader), prefix 
 						loadingMutex.Unlock()
 
 						if !ok {
-							// if we're here then there's nothing left to scan from the source
-							// so we're at the EOF and can flush the stale content. Apply the
-							// saved scroll first (if any) so that onEndOfInput clamps it back
+							// We're at EOF before reaching InitialRefreshAfter (the content was
+							// shorter than a screenful), so swap in whatever we read now. Apply
+							// the saved scroll first (if any) so that onEndOfInput clamps it back
 							// into range when the new content turned out shorter than expected.
+							self.swapInRender()
 							applyInitialScroll()
 							self.onEndOfInput()
 							// The content is fully loaded now, so it's safe again for the
@@ -472,11 +487,12 @@ func (self *ViewBufferManager) NewCmdTask(start func() (Cmd, io.Reader), prefix 
 						}
 
 						if i+1 == linesToRead.InitialRefreshAfter {
-							// We have read enough lines to fill the view, so do a first refresh
-							// here to show what we have. Apply the saved scroll first (if any)
-							// so the first paint already lands at it. Continue reading and
-							// refresh again at the end to make sure the scrollbar has the right
-							// size.
+							// We have read enough lines to fill the view, so swap the off-screen
+							// content in and do a first refresh to show it. Apply the saved
+							// scroll first (if any) so the first paint already lands at it.
+							// Continue reading and refresh again at the end to make sure the
+							// scrollbar has the right size.
+							self.swapInRender()
 							applyInitialScroll()
 							refreshViewIfStale()
 						}
