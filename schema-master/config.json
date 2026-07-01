@@ -1663,9 +1663,6 @@
         "branches": {
           "$ref": "#/$defs/KeybindingBranchesConfig"
         },
-        "worktrees": {
-          "$ref": "#/$defs/KeybindingWorktreesConfig"
-        },
         "commits": {
           "$ref": "#/$defs/KeybindingCommitsConfig"
         },
@@ -2886,6 +2883,20 @@
           ],
           "default": "n"
         },
+        "newWorktree": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "default": "w"
+        },
         "edit": {
           "oneOf": [
             {
@@ -3412,26 +3423,6 @@
       "additionalProperties": false,
       "type": "object"
     },
-    "KeybindingWorktreesConfig": {
-      "properties": {
-        "viewWorktreeOptions": {
-          "oneOf": [
-            {
-              "type": "string"
-            },
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          ],
-          "default": "w"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
     "LogConfig": {
       "properties": {
         "order": {
@@ -3839,6 +3830,10 @@
           "$ref": "#/$defs/GitConfig",
           "description": "Config relating to git"
         },
+        "worktree": {
+          "$ref": "#/$defs/WorktreeConfig",
+          "description": "Config relating to git worktrees"
+        },
         "update": {
           "$ref": "#/$defs/UpdateConfig",
           "description": "Periodic update checks"
@@ -3904,6 +3899,17 @@
       },
       "additionalProperties": false,
       "type": "object"
+    },
+    "WorktreeConfig": {
+      "properties": {
+        "defaultPath": {
+          "type": "string",
+          "description": "Default parent directory for new worktrees. It is offered as a candidate location alongside the parent directories of any worktrees you already have.\nA relative path is resolved against the repository's root directory, so \"../worktrees\" sits beside the repo and \".worktrees\" sits inside it.\nA leading \"~\" is expanded to your home directory, so \"~/worktrees\" works."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "Config relating to git worktrees"
     }
   }
 }
