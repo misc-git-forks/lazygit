@@ -1,41 +1,54 @@
-//go:build !windows
-
 package gui
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 
-	"github.com/creack/pty"
+	"github.com/jesseduffield/lazygit/pkg/commands/oscommands"
 	"github.com/jesseduffield/lazygit/pkg/gocui"
+	"github.com/jesseduffield/lazygit/pkg/tasks"
 	"github.com/jesseduffield/lazygit/pkg/utils"
 	"github.com/samber/lo"
 )
 
-func (gui *Gui) desiredPtySize(view *gocui.View) *pty.Winsize {
+func (gui *Gui) desiredPtySize(view *gocui.View) (cols, rows uint16) {
 	width, height := view.InnerSize()
-
-	return &pty.Winsize{Cols: uint16(width), Rows: uint16(height)}
+	return uint16(width), uint16(height)
 }
 
 func (gui *Gui) onResize() error {
 	gui.Mutexes.PtyMutex.Lock()
 	defer gui.Mutexes.PtyMutex.Unlock()
 
-	for viewName, ptmx := range gui.viewPtmxMap {
+	for viewName, p := range gui.viewPtmxMap {
 		// TODO: handle resizing properly: we need to actually clear the main view
 		// and re-read the output from our pty. Or we could just re-run the original
 		// command from scratch
 		view, _ := gui.g.View(viewName)
-		if err := pty.Setsize(ptmx, gui.desiredPtySize(view)); err != nil {
+		cols, rows := gui.desiredPtySize(view)
+		if err := p.Resize(cols, rows); err != nil {
 			return utils.WrapError(err)
 		}
 	}
 
 	return nil
 }
+
+// ptyCmd adapts an oscommands.StartedPty result into the tasks.Cmd shape.
+// On Windows the original *exec.Cmd was never Start()ed, so we go through
+// the explicit Process handle rather than cmd.Process.
+type ptyCmd struct {
+	cmd     *exec.Cmd
+	process *os.Process
+	wait    func() error
+}
+
+func (p ptyCmd) Wait() error             { return p.wait() }
+func (p ptyCmd) String() string          { return p.cmd.String() }
+func (p ptyCmd) GetProcess() *os.Process { return p.process }
 
 // Some commands need to output for a terminal to active certain behaviour.
 // For example,  git won't invoke the GIT_PAGER env var unless it thinks it's
@@ -45,6 +58,12 @@ func (gui *Gui) onResize() error {
 // command.
 func (gui *Gui) newPtyTask(view *gocui.View, cmd *exec.Cmd, prefix string) error {
 	width := view.InnerWidth()
+
+	// LAZYGIT_COLUMNS is documented in docs/Custom_Pagers.md for pager
+	// scripts that can't query the terminal width directly. We set it on
+	// every platform so those scripts remain portable.
+	cmd.Env = append(cmd.Env, fmt.Sprintf("LAZYGIT_COLUMNS=%d", width))
+
 	pager := gui.stateAccessor.GetPagerConfig().GetPagerCommand(width)
 	externalDiffCommand := gui.stateAccessor.GetPagerConfig().GetExternalDiffCommand()
 	useExtDiffGitConfig := gui.stateAccessor.GetPagerConfig().GetUseExternalDiffGitConfig()
@@ -53,6 +72,16 @@ func (gui *Gui) newPtyTask(view *gocui.View, cmd *exec.Cmd, prefix string) error
 		// If we're not using a custom pager nor external diff command, then we don't need to use a pty
 		return gui.newCmdTask(view, cmd, prefix)
 	}
+
+	// Mark the view as loading synchronously now, before the layout pass: the
+	// actual task is created in afterLayout (below), which runs after layout, so
+	// without this the next layout pass would clamp the scroll position to the
+	// not-yet-loaded content.
+	gui.getManager(view).StartLoading()
+	// Hold the scrollbar at its current height while the re-render loads, so the
+	// thumb doesn't shrink and snap back when the first partial paint swaps in
+	// (see the matching call in newCmdTask).
+	view.FreezeScrollbarHeight()
 
 	// Run the pty after layout so that it gets the correct size
 	gui.afterLayout(func() error {
@@ -72,31 +101,54 @@ func (gui *Gui) newPtyTask(view *gocui.View, cmd *exec.Cmd, prefix string) error
 
 		cmd.Env = append(cmd.Env, "GIT_PAGER="+pager)
 
+		// Advertise to a metadata-aware pager (e.g. a patched delta) the diff-line
+		// metadata protocol versions we understand, so it annotates each line with
+		// an OSC sequence we can read back (see diff-line-metadata-notes.md). A
+		// pager that doesn't understand it ignores the variable, so this is safe to
+		// set unconditionally.
+		cmd.Env = append(cmd.Env, "EMIT_OSC1717_METADATA=V1")
+
 		manager := gui.getManager(view)
 
-		var ptmx *os.File
-		start := func() (*exec.Cmd, io.Reader) {
-			var err error
-			ptmx, err = pty.StartWithSize(cmd, gui.desiredPtySize(view))
+		var p oscommands.Pty
+		start := func() (tasks.Cmd, io.Reader) {
+			cols, rows := gui.desiredPtySize(view)
+			sp, err := oscommands.StartPty(cmd, cols, rows)
 			if err != nil {
 				gui.c.Log.Error(err)
+				return tasks.ExecCmd{Cmd: cmd}, nil
 			}
+			p = sp.Pty
 
 			gui.Mutexes.PtyMutex.Lock()
-			gui.viewPtmxMap[view.Name()] = ptmx
+			gui.viewPtmxMap[view.Name()] = p
 			gui.Mutexes.PtyMutex.Unlock()
 
-			return cmd, ptmx
+			return ptyCmd{cmd: cmd, process: sp.Process, wait: sp.Wait}, p
 		}
 
 		onClose := func() {
 			gui.Mutexes.PtyMutex.Lock()
-			ptmx.Close()
+			if p != nil {
+				p.Close()
+			}
 			delete(gui.viewPtmxMap, view.Name())
 			gui.Mutexes.PtyMutex.Unlock()
 		}
 
 		linesToRead := gui.linesToReadFromCmdTask(view)
+		// As in newCmdTask: if a restore is pending for this content (returning to a
+		// focused main view on escape), let the task re-establish the scroll
+		// position and selection as it first paints, reading to end of input so a
+		// deep target line is found and the scrollbar ends up accurate.
+		restore := manager.GetRestoreForNextTask()
+		if restore != nil {
+			linesToRead.Restore = restore
+			linesToRead.Total = -1
+		}
+		// New content scrolls back to the top at the first paint; same content keeps
+		// its scroll, and a restore places the scroll itself. See LinesToRead.ResetOrigin.
+		linesToRead.ResetOrigin = restore == nil && cmdStr != manager.GetTaskKey()
 		return manager.NewTask(manager.NewCmdTask(start, prefix, linesToRead, onClose), cmdStr)
 	})
 
