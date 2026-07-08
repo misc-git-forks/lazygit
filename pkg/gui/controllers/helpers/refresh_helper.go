@@ -1207,7 +1207,8 @@ func (self *RefreshHelper) refreshStateFiles(captured capturedFilesState, env re
 			// for operations we started ourselves; prompting for one that was
 			// started outside lazygit (e.g. by a coding agent) would be confusing.
 			self.onUIThreadUnlessRepoChanged(env, func() error {
-				return self.mergeAndRebaseHelper.PromptToContinueRebase()
+				self.mergeAndRebaseHelper.PromptToContinueRebase()
+				return nil
 			})
 		}
 	} else {
