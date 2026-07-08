@@ -391,7 +391,7 @@ func (gui *Gui) onNewRepo(startArgs appTypes.StartArgs, contextKey types.Context
 			}
 
 			gui.c.Log.Info("Receiving focus - refreshing")
-			gui.helpers.Refresh.Refresh(types.RefreshOptions{Mode: types.ASYNC})
+			gui.helpers.Refresh.Refresh(types.RefreshOptions{})
 			return reloadErr
 		}
 
@@ -811,7 +811,7 @@ func NewGui(
 		func(ctx goContext.Context, opts types.CreatePopupPanelOpts) {
 			gui.helpers.Confirmation.CreatePopupPanel(ctx, opts)
 		},
-		func() error { gui.c.Refresh(types.RefreshOptions{Mode: types.ASYNC}); return nil },
+		func() error { gui.c.Refresh(types.RefreshOptions{}); return nil },
 		func() { gui.State.ContextMgr.Pop() },
 		func() types.Context { return gui.State.ContextMgr.Current() },
 		gui.createMenu,
@@ -1019,7 +1019,7 @@ func (gui *Gui) runSubprocessWithSuspenseAndRefresh(subprocess *oscommands.CmdOb
 		return err
 	}
 
-	gui.c.Refresh(types.RefreshOptions{Mode: types.ASYNC})
+	gui.c.Refresh(types.RefreshOptions{})
 
 	return nil
 }
@@ -1096,7 +1096,7 @@ func (gui *Gui) loadNewRepo() error {
 		return err
 	}
 
-	gui.c.Refresh(types.RefreshOptions{Mode: types.ASYNC})
+	gui.c.Refresh(types.RefreshOptions{})
 
 	if err := gui.os.UpdateWindowTitle(); err != nil {
 		return err
