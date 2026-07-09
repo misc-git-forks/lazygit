@@ -44,11 +44,22 @@ func (gui *Gui) handleTestMode() {
 				return gocui.ErrQuit
 			})
 
-			waitUntilIdle()
-
-			time.Sleep(time.Second * 1)
-
-			log.Fatal("gocui should have already exited")
+			// Wait for the event loop to actually exit, rather than sleeping a
+			// fixed interval and then asserting it must have quit by now — that
+			// assumption is fragile, especially under the race detector where
+			// everything runs slower, and the watchdog below still catches a loop
+			// that genuinely never quits. Keep draining idle notifications while
+			// we wait: the driver no longer consumes them now the test is done,
+			// and the task manager's idle send is unbuffered, so leaving it unread
+			// would block the UI thread as it shuts down.
+			loopExited := gui.g.LoopExited()
+			for {
+				select {
+				case <-isIdleChan:
+				case <-loopExited:
+					return
+				}
+			}
 		}()
 
 		if os.Getenv(components.WAIT_FOR_DEBUGGER_ENV_VAR) == "" {
